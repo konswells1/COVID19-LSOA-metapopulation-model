@@ -1,0 +1,482 @@
+
+
+library(raster)
+library(igraph)
+library(data.table)
+library(lhs)
+library(sf)
+library(rgdal)
+library(sp)
+library(rgeos)
+library(dismo)
+library(spdep)
+library(ggplot2)
+library(GGally)
+library(ggnet)
+library(RColorBrewer)  
+library(colorspace)
+
+crs.WGS84 <- "+proj=longlat +ellps=WGS84 +datum=WGS84 +no_defs"
+cl.1 <- brewer.pal(3, name = "Set1")
+
+
+##############
+# Load and format data
+
+setwd(dir_UK.geo)
+map_LSOA.Wales <- st_read("./MAPS_UK.boundaries/LSOA_shape/LSOA_2011_Wales.shp")
+
+LSOA_Pop <- read.csv("LSOA_Pop_aggr.age.csv", header=T)
+LSOA_Pop <- LSOA_Pop[grep("W", LSOA_Pop$Area.Codes),]
+LSOA_Pop <- LSOA_Pop[which(!is.na(LSOA_Pop$Eastings)),]
+
+LSOA_RUC <- read.csv("Rural_Urban_Classification__2011__of_Lower_Layer_Super_Output_Areas_in_England_and_Wales.csv", header=T)
+LSOA_RUC <- LSOA_RUC[grep("W", LSOA_RUC$ï..LSOA11CD),]
+
+pop_eastings <- LSOA_Pop$Eastings
+pop_northings <- LSOA_Pop$Northings
+pop_area_m2 <- LSOA_Pop$Area_m2
+pop_county <- LSOA_Pop$County
+
+
+pop_male_total <- LSOA_Pop$Male_all.age
+pop_female_total <- LSOA_Pop$Female_all.age
+pop_total <- pop_male_total + pop_female_total
+
+pop_pop.density <- pop_total/pop_area_m2
+pop_pop.density_sc <- pop_pop.density/ max(pop_pop.density)
+
+pop_ruc11 <- LSOA_RUC$RUC11[match(LSOA_Pop$Area.Codes, LSOA_RUC$ï..LSOA11CD)]
+pop_urban.rural <- pop_ruc11
+pop_urban.rural[grep("Urban", pop_ruc11)] <- "urban"
+pop_urban.rural[grep("Rural", pop_ruc11)] <- "rural"
+
+Pop_agecat <- data.frame(
+	pop_m_0to4 = LSOA_Pop$Male_0to4,
+	pop_m_5to10 =LSOA_Pop$Male_5to10,
+	pop_m_11to16 = LSOA_Pop$Male_11to16,
+	pop_m_17to25 = LSOA_Pop$Male_17to25,
+	pop_m_26to45 = LSOA_Pop$Male_26to45,
+	pop_m_46to64 = LSOA_Pop$Male_46to64,
+	pop_m_65to74 = LSOA_Pop$Male_65to74,
+	pop_m_75.above = LSOA_Pop$Male_75.above,
+	pop_f_0to4 = LSOA_Pop$Female_0to4,
+	pop_f_5to10 = LSOA_Pop$Female_5to10,
+	pop_f_11to16 = LSOA_Pop$Female_11to16,
+	pop_f_17to25 = LSOA_Pop$Female_17to25,
+	pop_f_26to45 = LSOA_Pop$Female_26to45,
+	pop_f_46to64 = LSOA_Pop$Female_46to64,
+	pop_f_65to74 = LSOA_Pop$Female_65to74,
+	pop_f_75.above = LSOA_Pop$Female_75.above)
+
+
+
+
+#############
+# Population-level summaries
+
+
+
+# Number of populations
+NPop.Wales <- dim(LSOA_Pop)[1]
+
+## Distance matrix between counties
+Dist.lsoa <- as.matrix(dist(data.frame(LSOA_Pop$Eastings, LSOA_Pop$Northings), method="euclidean", diag=TRUE, upper=TRUE))
+
+# Compute adjacency matrix for LSOA polygons
+lsoa.adj <- poly2nb(map_LSOA.Wales, row.names = map_LSOA.Wales$LSOA11CD)
+# Construct the binary adjacency  matrix
+W.lsoa <- nb2mat(lsoa.adj, style="B")
+
+
+# Gravity matrix based on N_i * N_j / dist_ij
+GravDist.lsoa <- matrix(NA, NPop.Wales, NPop.Wales)
+for(i in 1:NPop.Wales){
+	for(j in 1:NPop.Wales){
+		#Distance to 10 nearest populations
+		popnearest.10_dist <- sort(Dist.lsoa[i,])[2:10]	
+		popnearest.10_npop <- pop_total[match(popnearest.10_dist,Dist.lsoa[i,])]
+		popnear <- sum(100* popnearest.10_npop/popnearest.10_dist)
+		GravDist.lsoa[i,j] <- round(log(pop_total[i] + popnear) * log(pop_total[j]) / (Dist.lsoa[i,j]+0.0001), 3) 
+	}
+} 
+diag(GravDist.lsoa) <- 0
+
+GravDist.lsoa_sc <- GravDist.lsoa/max(GravDist.lsoa)
+
+pop_grav.index <- rowSums(GravDist.lsoa)
+pop_dist.index <- rowSums(Dist.lsoa)
+
+
+# Generate graph
+graph_lsoa.gravity <- graph.adjacency(GravDist.lsoa_sc[sel_pop, sel_pop ], mode="undirected",weighted=TRUE,diag=FALSE)
+
+
+plot(graph_lsoa.gravity, vertex.label=NA, vertex.size=log2(pop_total), vertex.color = '#e6194b') #layout=layout.circle
+text(0,1.15, 'Wales LSAO gravity model', cex=0.5)
+
+###########
+# Select subset for modelling
+
+county.select <- c("Pembrokeshire", "Carmarthenshire", "Swansea", "Neath Port Talbot")
+sel_pop <- which(!is.na(match(pop_county, county.select)))
+length(sel_pop)
+pop_is.sel <- ifelse(!is.na(match(pop_county, county.select)), 1, 0)
+
+
+pop_col <- ifelse(pop_is.sel==1, "#E7298A", "#1B9E77")
+ggplot(data = map_LSOA.Wales) +
+    geom_sf() + xlim(range(pop_eastings)) + ylim(range(pop_northings)) +
+    geom_point(data=LSOA_Pop, aes(x = Eastings, y = Northings), color= pop_col, size = (2*pop_grav.index/max(pop_grav.index))) + 
+    scale_color_brewer(palette="YlOrRd") + ggtitle("LSOA data") 
+
+
+net <- network(GravDist.lsoa_sc[sel_pop, sel_pop])
+
+
+
+
+#############
+# Demographic (fixed) attributed of individuals
+
+
+# Total population size
+NPop <- length(pop_total[sel_pop]) 
+NInd <- sum(pop_total[sel_pop])
+
+
+IND <- data.frame(pop.no = rep(1:NPop, pop_total[sel_pop]) )
+
+IND$ind.no <- 1:NInd
+IND$sex <- rep(NA, dim(IND)[1])
+IND$age_cat <- rep(NA, dim(IND)[1])
+
+for(i in 1:NPop){
+	sel <- which(IND$pop.no==i)
+	IND$sex[sel] <-  c(rep("m", pop_male_total[sel_pop][i]), rep("f", pop_female_total[sel_pop][i]))
+	IND$age_cat[sel] <-  rep(rep(c("c.1", "c.2", "c.3", "c.4", "c.5", "c.6", "c.7", "c.8"),2), Pop_agecat[sel_pop[i],])
+}
+ 
+IND$eastings <- pop_eastings[sel_pop][IND$pop.no]
+IND$northings <- pop_northings[sel_pop][IND$pop.no]
+
+IND$pop.density <- pop_pop.density[sel_pop][IND$pop.no]
+
+IND$status <- rep("S", dim(IND)[1])
+
+ind_attr.name <- colnames(IND)
+nattr <- length(ind_attr.name)
+
+Dist_sel <- Dist.lsoa[sel_pop, sel_pop]
+
+
+#######
+# Functions for SEIR model
+
+func.expose.dens <- function(inds, beta, inf.asympt, dens.sc, delta){
+    select.S <- which(inds$status=="S")  
+    select.A <- which(inds$status=="A") 
+    select.I <- which(inds$status=="I")  
+    nS <- length(select.S)
+    nA <- length(select.A)
+    nI <- length(select.I)
+    N <- length(which(inds$status=="S" | inds$status=="A" | inds$status=="I" | inds$status=="R"))
+    if(nS>0){	  
+	 # Number of individual contacts (rbinom(3, 0.25 according to Danon et al. 2012)) with a density dependende effect on 'long tail'
+	 ncontact.i <- round(rnbinom(nS, 3, 0.26) + rlnorm(nS, meanlog = 2, sdlog = 1) * dens.sc^delta)	
+	 ncontact.i[which(ncontact.i>=(N-1))] <- (N-1) 
+       ncontact.i_I <- rbinom(nS, ncontact.i, nI/N) 
+       ncontact.i_A <- rbinom(nS, ncontact.i, nA/N) 
+    
+  	 risk.i <-  inds$Risk[select.S]
+	 # betas for 1) without mitigation 2) mitigation high risk 3) low risk if selective 4) low risk if non-selective mitigation	
+	 beta.i <- beta		
+	lambda.i <- beta.i * ncontact.i_I  +  beta.i * inf.asympt * ncontact.i_A
+	lambda.i[which(lambda.i>1)] <- 1
+      infect.i <- rbinom(nS,1,lambda.i)
+      # Update individual infection status
+      inds$status[select.S[which(infect.i==1)]] <- "E"    
+    }else{} 
+    return(inds)    
+} 
+
+func.infectious <- function(inds, incub.d, p.asympt){
+    select.E <- which(inds$status=="E") 
+    nE <- length(select.E)
+    if(nE>0){	  
+	kappa <- 1/ runif(nE, incub.d[1], incub.d[2])
+	transEI <- rbinom(nE,1,kappa)
+	transEA <- rbinom(nE,1,transEI*p.asympt)
+      inds$status[select.E[which(transEI==1)]] <- "I"
+      inds$status[select.E[which(transEA==1)]] <- "A"
+    }else{} 
+    return(inds)    
+}
+
+func.recov <- function(inds, infectious.d){
+    select.I <- which(inds$status=="I")  
+    select.A <- which(inds$status=="A")  
+    nI <- length(select.I) # number of infected ind.
+    nA <- length(select.A) # number of asymptomatic ind.
+    if(nI>0){
+		gamma <- 1/ runif(nI, infectious.d[1], infectious.d[2]) 
+            recover <- rbinom(nI,1,gamma)
+             # Update individual infection status
+             inds$status[select.I[which(recover==1)]] <- "R"
+    }else{} 
+    if(nA>0){
+		gamma <- 1/ runif(nA, infectious.d[1], infectious.d[2]) 
+            recover <- rbinom(nA,1,gamma)
+             # Update individual infection status
+             inds$status[select.A[which(recover==1)]] <- "R"
+    }else{}
+    return(inds)    
+}
+
+func.trace.EAI <- function(inds, p.trace.EAI){
+    select.EAI <- which(inds$status=="E" | inds$status=="A" | inds$status=="I")    
+    nEAI <- length(select.EAI)
+    if(nEAI>0){
+       trace.i <- rbinom(nEAI,1,p.trace.EAI)
+       # Update individual infection status (assign traced individuals to R)
+	 inds$status[select.EAI[which(trace.i==1)]] <- "R"
+    }else{}
+    return(inds)
+}
+	
+func.trace.I <- function(inds, p.trace.I){
+    select.I <- which(inds$status=="I")    
+    nI <- length(select.I)
+    if(nI>0){
+       trace.i <- rbinom(nI,1,p.trace.I)
+       inds$status[select.I[which(trace.i==1)]] <- "R"
+    }else{}
+    # Update individual infection status (assign traced individuals to R)
+    return(inds)
+}
+
+######################################3
+#
+# Run simulations
+#
+#####################################
+
+############
+## CODVID19 epidemiologicl parameters
+
+
+# Average incubation period incub.d
+incub.d <- c(4,6)   # 
+
+# Average infectious period infectious.d
+infectious.d <- c(7,10)
+
+
+# Number of time steps for running simulations  
+T <- 100
+time <- 1:T
+
+# Number of individuals initially infected
+n.I0 <- NPop
+
+
+
+########################
+#  Construct hybercube of parameter combination for different scenarios
+
+
+#########################
+# Random combination of parameters to be sampled
+
+# Parameters to be sampled
+ParEpi_val <- data.frame(
+	beta = c(0.001, 0.3),
+	p.asympt = c(0.1, 0.7),  # Proportion of asymptomatic individuals
+	inf.asympt = c(0.5, 1),  # infectiousness of asymptomatic individuals
+	disp.rate = c(0.01, 0.2),
+	p.resist = c(0.1, 0.5),
+	delta = c(0, 1)
+)
+# Names of parameters to be sampled
+ParEpi_name <- names(ParEpi_val)
+NParEpi <- length(ParEpi_name)
+
+ParManage_val <- data.frame(
+	p.trace.EAI  = c(0, 0.9),
+	p.trace.I = c(0, 0.9),
+	mit.treshold = c(0.01, 0.1),  # Treshold of % population infected to lower beta
+	mit.time = 	c(10, 30),
+	mit.dist = c(5000, 20000)
+)
+# Names of parameters to be sampled
+ParManage_name <- names(ParManage_val)
+NParManage <- length(ParManage_name)
+
+NSample_demogr <- 1000
+# Hypercube of parameters
+LHS <- randomLHS(n = NSample_demogr, k= NParEpi, preserveDraw = TRUE)
+SampCube_demogr <- matrix(NA, nrow = NParEpi, ncol = NSample_demogr);
+for(p in 1:NParEpi){
+	SampCube_demogr[p, ] <- round(qunif(LHS[ ,p], min(ParEpi_val[,p ]), max(ParEpi_val[,p ])),3)
+}
+rownames(SampCube_demogr) <- ParEpi_name
+
+NSample_manage <- 1000
+# Hypercube of parameters
+LHS <- randomLHS(n = NSample_manage, k= NParManage, preserveDraw = TRUE)
+SampCube_manage <- matrix(NA, nrow = NParManage, ncol = NSample_manage)
+for(p in 1:NParManage){
+	SampCube_manage[p, ] <- round(qunif(LHS[ ,p], min(ParManage_val[,p ]), max(ParManage_val[,p ])),3)
+}
+rownames(SampCube_manage) <- ParManage_name
+SampCube_manage["mit.time",] <- round(SampCube_manage["mit.time",])
+SampCube_manage["mit.dist",] <- round(SampCube_manage["mit.dist",])
+
+
+## Construct overall hypercube:
+
+HypCube_name <- c("scenario", ParEpi_name, ParManage_name)
+ncol.HypCube <- length(HypCube_name)
+nrow.HypCube <- NSample_demogr*4
+
+##  Hypercube <- data.frame(matrix(0, nrow = nrow.HypCube, ncol = ncol.HypCube))
+colnames(Hypercube) <- HypCube_name 
+Hypercube$scenario <- rep(1:4, NSample_demogr)
+for(i in 1:4){
+	Hypercube[which(Hypercube$scenario==i),ParEpi_name] <- t(SampCube_demogr)
+}
+Hypercube$p.trace.EAI[which(Hypercube$scenario==2)] <- SampCube_manage["p.trace.EAI",]
+Hypercube$p.trace.I[which(Hypercube$scenario==3)] <- SampCube_manage["p.trace.I",]
+Hypercube$mit.treshold[which(Hypercube$scenario==4)] <- SampCube_manage["mit.treshold",]
+Hypercube$mit.time[which(Hypercube$scenario==4)] <- SampCube_manage["mit.time",]
+Hypercube$mit.dist[which(Hypercube$scenario==4)] <- SampCube_manage["mit.dist",]
+
+NSim = nrow.HypCube
+
+
+## setwd(dir.sim); save(Hypercube, file="Hypercube.RData")
+setwd(dir.sim); load("Hypercube.RData")
+
+
+
+###########
+# Run simulations
+
+setwd(dir.sim)
+x.start <-1
+x.end <- NSim
+
+
+RUN.SIM <- function(x.start, x.end){
+
+for(x in x.start:x.end){
+
+	# Parameters from hypercube
+	scenario <- Hypercube$scenario [x]
+	beta <- Hypercube$beta [x]
+	p.asympt <- Hypercube$p.asympt [x]
+	inf.asympt <- Hypercube$inf.asympt [x]
+	disp.rate <- Hypercube$disp.rate [x]
+	p.resist <- Hypercube$p.resist [x]
+	delta <- Hypercube$delta [x]
+	p.trace.EAI <- Hypercube$p.trace.EAI [x]
+	p.trace.I <- Hypercube$p.trace.I [x]
+	mit.treshold <- Hypercube$mit.treshold [x]
+	mit.time <- Hypercube$mit.time [x]
+	mit.dist <- Hypercube$mit.dist [x]
+
+	## Set initial infection scenarios
+	IND.sim <- IND
+	# Initial infection
+	sel.R0 <- sample(which(IND.sim$status=="S"), round(p.resist*dim(IND.sim)[1]))
+	IND.sim$status[sel.R0] <- "R"
+	sel.I0 <- sample(which(IND.sim$status=="S"), n.I0)
+	IND.sim$status[sel.I0] <- "I"
+
+	# Generate matrices to store output
+	out_names <- c("nS",  "nE",  "nA", "nI",  "nR", "A.new", "I.new", "time.Mitigate")
+	nout <- length(out_names)
+	Out_ind <- array(0, dim=c(NPop, T, nout)) 
+
+	# Loop over all time step to iteratively expose individuals to processes
+	t.start <- Sys.time()
+	for(t in 1:T){
+	
+		#Loop over all population with epidemiological dynamics
+		for(m in 1:NPop){
+			# Relative population density (empirical LSOA data)
+			dens.sc <- pop_pop.density_sc[sel_pop][m]	
+
+			# Select individuals of local population	
+			indno_local <- 	IND.sim$ind.no[which(IND.sim$pop.no==m)]
+
+			# Check for implemented mitigation strategi
+			if(Out_ind[m, t, which(out_names=="time.Mitigate")]==0){
+				# Select visting individuals according to dispersal rate and gravity index
+				p.travel <- GravDist.lsoa_sc[sel_pop, sel_pop][m,]
+				indno_visit <- 	which(rbinom(NInd, 1, disp.rate * p.travel)==1)
+
+				# Individuals present in local context	
+				inds <- IND.sim[c(indno_local, indno_visit),]	
+
+		      	#  Apply function (processes) to individuals
+		      	inds <- func.expose.dens(inds, beta, inf.asympt, dens.sc, delta)
+			}else{	
+				# Select visting individuals within constrained travel range
+				travel.limit <- ifelse(Dist.lsoa[sel_pop, sel_pop][m,]>=mit.dist, 0,1)
+				p.travel <- GravDist.lsoa_sc[sel_pop, sel_pop][m,] * travel.limit
+				indno_visit <- which(rbinom(NInd, 1, disp.rate * p.travel)==1)
+				# Individuals present in local context	
+				inds <- IND.sim[c(indno_local, indno_visit),]	
+				beta.mit <- beta * 0.5
+		      	#  Apply function (processes) to individuals
+		      	inds <- func.expose.dens(inds, beta.mit, inf.asympt, dens.sc, delta)
+			}
+
+	            nI.0 <- length(which(inds$status=="I"))		
+	            nA.0 <- length(which(inds$status=="A"))
+		      inds <- func.infectious(inds, incub.d, p.asympt)
+		      nI.new <- (length(which(inds$status=="I")) - nI.0)	
+		      nA.new <- (length(which(inds$status=="A")) - nA.0)
+
+		      inds <- func.recov(inds, infectious.d)
+
+			# Contact tracing management
+			if(p.trace.I>0){
+			      inds <- func.trace.I(inds, p.trace.I)
+			}else{}
+			if(p.trace.EAI>0){
+			      inds <- func.trace.EAI(inds, p.trace.EAI)
+			}else{}
+
+			# Local outbreak treshold mitigations
+			propI_pop <- length(which(inds$status=="I"))/pop_total[sel_pop][m]
+			if(propI_pop>=mit.treshold){
+				tmax.mit <- min(t+mit.time, T)
+				Out_ind[m, t:tmax.mit, which(out_names=="time.Mitigate")] <- t
+			}
+
+		      #  Summarize output after exposure of individuals to processes	
+		      Out_ind[m, t, which(out_names=="nS")] <- length(which(inds$status=="S"))
+		      Out_ind[m, t, which(out_names=="nE")] <- length(which(inds$status=="E"))
+		      Out_ind[m, t, which(out_names=="nA")] <- length(which(inds$status=="A"))
+		      Out_ind[m, t, which(out_names=="nI")] <- length(which(inds$status=="I"))
+		      Out_ind[m, t, which(out_names=="nR")] <- length(which(inds$status=="R"))
+		      Out_ind[m, t, which(out_names=="I.new")] <- nI.new
+		      Out_ind[m, t, which(out_names=="A.new")] <- nA.new
+
+		      # Update global file of individuals	
+		      IND.sim[c(indno_local, indno_visit),] <- inds
+		      rm(inds)
+		}
+	print(paste("Sim: ", x, "Time: ", t, "  ,time:", Sys.time() - t.start))
+	}
+	save(Out_ind, file=paste("Out_ind_", x, ".RData", sep=""))
+	print(paste("Sim: ", x, "  ,time:", Sys.time() - t.start))
+	rm(IND.sim, Out_ind)
+}
+}
+
+
+RUN.SIM(1, NSim)
+
