@@ -1,7 +1,6 @@
 
 
 library(raster)
-library(igraph)
 library(data.table)
 library(lhs)
 library(sf)
@@ -10,11 +9,7 @@ library(sp)
 library(rgeos)
 library(dismo)
 library(spdep)
-library(ggplot2)
-library(GGally)
-library(ggnet)
-library(RColorBrewer)  
-library(colorspace)
+
 
 crs.WGS84 <- "+proj=longlat +ellps=WGS84 +datum=WGS84 +no_defs"
 cl.1 <- brewer.pal(3, name = "Set1")
@@ -262,7 +257,7 @@ func.trace.I <- function(inds, p.trace.I){
 #####################################
 
 ############
-## CODVID19 epidemiologicl parameters
+## CODVID19 epidemiological parameters
 
 
 # Average incubation period incub.d
@@ -304,15 +299,16 @@ NParEpi <- length(ParEpi_name)
 ParManage_val <- data.frame(
 	p.trace.EAI  = c(0, 0.9),
 	p.trace.I = c(0, 0.9),
-	mit.treshold = c(0.01, 0.1),  # Treshold of % population infected to lower beta
-	mit.time = 	c(10, 30),
-	mit.dist = c(5000, 20000)
+	lockdown.treshold = c(0.01, 0.1),  # Treshold of % population infected to lower beta
+	lockdown.time = 	c(10, 30),
+	lockdown.dist = c(1000, 20000),
+	lockdown.factor = c(0, 0.5)
 )
 # Names of parameters to be sampled
 ParManage_name <- names(ParManage_val)
 NParManage <- length(ParManage_name)
 
-NSample_demogr <- 1000
+NSample_demogr <- 10000
 # Hypercube of parameters
 LHS <- randomLHS(n = NSample_demogr, k= NParEpi, preserveDraw = TRUE)
 SampCube_demogr <- matrix(NA, nrow = NParEpi, ncol = NSample_demogr);
@@ -321,7 +317,7 @@ for(p in 1:NParEpi){
 }
 rownames(SampCube_demogr) <- ParEpi_name
 
-NSample_manage <- 1000
+NSample_manage <- NSample_demogr
 # Hypercube of parameters
 LHS <- randomLHS(n = NSample_manage, k= NParManage, preserveDraw = TRUE)
 SampCube_manage <- matrix(NA, nrow = NParManage, ncol = NSample_manage)
@@ -329,12 +325,11 @@ for(p in 1:NParManage){
 	SampCube_manage[p, ] <- round(qunif(LHS[ ,p], min(ParManage_val[,p ]), max(ParManage_val[,p ])),3)
 }
 rownames(SampCube_manage) <- ParManage_name
-SampCube_manage["mit.time",] <- round(SampCube_manage["mit.time",])
-SampCube_manage["mit.dist",] <- round(SampCube_manage["mit.dist",])
+SampCube_manage["lockdown.time",] <- round(SampCube_manage["lockdown.time",])
+SampCube_manage["lockdown.dist",] <- round(SampCube_manage["lockdown.dist",])
 
 
-## Construct overall hypercube:
-
+## Construct overall hypercube: each baseline scenario as control (scenario 1) and in combination with a control strategy
 HypCube_name <- c("scenario", ParEpi_name, ParManage_name)
 ncol.HypCube <- length(HypCube_name)
 nrow.HypCube <- NSample_demogr*4
@@ -347,9 +342,11 @@ for(i in 1:4){
 }
 Hypercube$p.trace.EAI[which(Hypercube$scenario==2)] <- SampCube_manage["p.trace.EAI",]
 Hypercube$p.trace.I[which(Hypercube$scenario==3)] <- SampCube_manage["p.trace.I",]
-Hypercube$mit.treshold[which(Hypercube$scenario==4)] <- SampCube_manage["mit.treshold",]
-Hypercube$mit.time[which(Hypercube$scenario==4)] <- SampCube_manage["mit.time",]
-Hypercube$mit.dist[which(Hypercube$scenario==4)] <- SampCube_manage["mit.dist",]
+Hypercube$lockdown.treshold[which(Hypercube$scenario==4)] <- SampCube_manage["lockdown.treshold",]
+Hypercube$lockdown.time[which(Hypercube$scenario==4)] <- SampCube_manage["lockdown.time",]
+Hypercube$lockdown.dist[which(Hypercube$scenario==4)] <- SampCube_manage["lockdown.dist",]
+Hypercube$lockdown.factor[which(Hypercube$scenario==4)] <- SampCube_manage["lockdown.factor",]
+
 
 NSim = nrow.HypCube
 
@@ -381,9 +378,10 @@ for(x in x.start:x.end){
 	delta <- Hypercube$delta [x]
 	p.trace.EAI <- Hypercube$p.trace.EAI [x]
 	p.trace.I <- Hypercube$p.trace.I [x]
-	mit.treshold <- Hypercube$mit.treshold [x]
-	mit.time <- Hypercube$mit.time [x]
-	mit.dist <- Hypercube$mit.dist [x]
+	lockdown.treshold <- Hypercube$lockdown.treshold [x]
+	lockdown.time <- Hypercube$lockdown.time [x]
+	lockdown.dist <- Hypercube$lockdown.dist [x]
+	lockdown.factor <- Hypercube$lockdown.factor [x]
 
 	## Set initial infection scenarios
 	IND.sim <- IND
@@ -394,7 +392,7 @@ for(x in x.start:x.end){
 	IND.sim$status[sel.I0] <- "I"
 
 	# Generate matrices to store output
-	out_names <- c("nS",  "nE",  "nA", "nI",  "nR", "A.new", "I.new", "time.Mitigate")
+	out_names <- c("nS",  "nE",  "nA", "nI",  "nR", "A.new", "I.new", "time.Lockdown")
 	nout <- length(out_names)
 	Out_ind <- array(0, dim=c(NPop, T, nout)) 
 
@@ -410,25 +408,25 @@ for(x in x.start:x.end){
 			# Select individuals of local population	
 			indno_local <- 	IND.sim$ind.no[which(IND.sim$pop.no==m)]
 
-			# Check for implemented mitigation strategi
-			if(Out_ind[m, t, which(out_names=="time.Mitigate")]==0){
+			# Check for implemented mitigation strategy
+			if(Out_ind[m, t, which(out_names=="time.Lockdown")]==0){
 				# Select visting individuals according to dispersal rate and gravity index
 				p.travel <- GravDist.lsoa_sc[sel_pop, sel_pop][m,]
-				indno_visit <- 	which(rbinom(NInd, 1, disp.rate * p.travel)==1)
+				indno_visit <- which(rbinom(NInd, 1, disp.rate * p.travel[IND.sim$pop.no])==1)
 
 				# Individuals present in local context	
 				inds <- IND.sim[c(indno_local, indno_visit),]	
 
-		      	#  Apply function (processes) to individuals
+		      	#  Apply functions   (processes) to individuals
 		      	inds <- func.expose.dens(inds, beta, inf.asympt, dens.sc, delta)
 			}else{	
 				# Select visting individuals within constrained travel range
-				travel.limit <- ifelse(Dist.lsoa[sel_pop, sel_pop][m,]>=mit.dist, 0,1)
+				travel.limit <- ifelse(Dist.lsoa[sel_pop, sel_pop][m,]>=lockdown.dist, 0,1)
 				p.travel <- GravDist.lsoa_sc[sel_pop, sel_pop][m,] * travel.limit
-				indno_visit <- which(rbinom(NInd, 1, disp.rate * p.travel)==1)
+				indno_visit <- which(rbinom(NInd, 1, disp.rate * p.travel[IND.sim$pop.no])==1)
 				# Individuals present in local context	
 				inds <- IND.sim[c(indno_local, indno_visit),]	
-				beta.mit <- beta * 0.5
+				beta.mit <- beta * lockdown.factor    ##0.5
 		      	#  Apply function (processes) to individuals
 		      	inds <- func.expose.dens(inds, beta.mit, inf.asympt, dens.sc, delta)
 			}
@@ -451,9 +449,9 @@ for(x in x.start:x.end){
 
 			# Local outbreak treshold mitigations
 			propI_pop <- length(which(inds$status=="I"))/pop_total[sel_pop][m]
-			if(propI_pop>=mit.treshold){
-				tmax.mit <- min(t+mit.time, T)
-				Out_ind[m, t:tmax.mit, which(out_names=="time.Mitigate")] <- t
+			if(propI_pop>=lockdown.treshold){
+				tmax.mit <- min(t+lockdown.time, T)
+				Out_ind[m, t:tmax.mit, which(out_names=="time.Lockdown")] <- t
 			}
 
 		      #  Summarize output after exposure of individuals to processes	
@@ -480,3 +478,4 @@ for(x in x.start:x.end){
 
 RUN.SIM(1, NSim)
 
+ 
