@@ -93,15 +93,9 @@ pop_grav.index <- rowSums(GravDist.lsoa)
 pop_dist.index <- rowSums(Dist.lsoa)
 
 
-# Generate graph
-graph_lsoa.gravity <- graph.adjacency(GravDist.lsoa_sc[sel_pop, sel_pop ], mode="undirected",weighted=TRUE,diag=FALSE)
-
-
-plot(graph_lsoa.gravity, vertex.label=NA, vertex.size=log2(pop_total), vertex.color = '#e6194b') #layout=layout.circle
-text(0,1.15, 'Wales LSAO gravity model', cex=0.5)
 
 ###########
-# Select subset for modelling
+# Select subset (focal study area) for modelling
 
 county.select <- c("Pembrokeshire", "Carmarthenshire", "Swansea", "Neath Port Talbot")
 sel_pop <- which(!is.na(match(pop_county, county.select)))
@@ -109,15 +103,23 @@ length(sel_pop)
 pop_is.sel <- ifelse(!is.na(match(pop_county, county.select)), 1, 0)
 
 
+## Plots: maps of LSOA distribution/network
 pop_col <- ifelse(pop_is.sel==1, "#E7298A", "#1B9E77")
-ggplot(data = map_LSOA.Wales) +
-    geom_sf() + xlim(range(pop_eastings)) + ylim(range(pop_northings)) +
-    geom_point(data=LSOA_Pop, aes(x = Eastings, y = Northings), color= pop_col, size = (2*pop_grav.index/max(pop_grav.index))) + 
-    scale_color_brewer(palette="YlOrRd") + ggtitle("LSOA data") 
+plot_map.UK.LSOA <- ggplot(data = map_LSOA.Wales) + geom_sf() + theme_classic() +
+     xlim(range(pop_eastings)) + ylim(range(pop_northings)) +
+    geom_point(data=LSOA_Pop, aes(x = Eastings, y = Northings), color= pop_col) +
+    xlab("Easting") + ylab("Northting")    
+plot_map.UK.LSOA
 
 
-net <- network(GravDist.lsoa_sc[sel_pop, sel_pop])
-
+dat.grav <- data.frame(east = pop_eastings[sel_pop], north= pop_northings[sel_pop], 
+			grav=scale(pop_grav.index[sel_pop]))
+plot_map.Wales.gravity <- ggplot(data = map_LSOA.Wales) +  geom_sf() + ##theme_classic() +
+    xlim(range(pop_eastings[sel_pop])) + ylim(range(pop_northings[sel_pop])) +
+    geom_point(data=dat.grav, aes(x = east, y = north, color= grav)) +     
+    scale_color_gradient(low="darkblue", high="yellow", name= "Connectivity") +
+    xlab("Easting") + ylab("Northting")    
+plot_map.Wales.gravity
 
 
 
