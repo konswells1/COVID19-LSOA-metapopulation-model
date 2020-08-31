@@ -18,7 +18,6 @@ cl.1 <- brewer.pal(3, name = "Set1")
 ##############
 # Load and format data
 
-setwd(dir_UK.geo)
 map_LSOA.Wales <- st_read("./MAPS_UK.boundaries/LSOA_shape/LSOA_2011_Wales.shp")
 
 LSOA_Pop <- read.csv("LSOA_Pop_aggr.age.csv", header=T)
@@ -78,13 +77,8 @@ NPop.Wales <- dim(LSOA_Pop)[1]
 ## Distance matrix between counties
 Dist.lsoa <- as.matrix(dist(data.frame(LSOA_Pop$Eastings, LSOA_Pop$Northings), method="euclidean", diag=TRUE, upper=TRUE))
 
-# Compute adjacency matrix for LSOA polygons
-lsoa.adj <- poly2nb(map_LSOA.Wales, row.names = map_LSOA.Wales$LSOA11CD)
-# Construct the binary adjacency  matrix
-W.lsoa <- nb2mat(lsoa.adj, style="B")
 
-
-# Gravity matrix based on N_i * N_j / dist_ij
+# Gravity matrix based on N_i * N_j / dist_ij (10 populations, inlcuding 9 nearest neighbors)
 GravDist.lsoa <- matrix(NA, NPop.Wales, NPop.Wales)
 for(i in 1:NPop.Wales){
 	for(j in 1:NPop.Wales){
