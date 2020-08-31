@@ -11,10 +11,6 @@ library(dismo)
 library(spdep)
 
 
-crs.WGS84 <- "+proj=longlat +ellps=WGS84 +datum=WGS84 +no_defs"
-cl.1 <- brewer.pal(3, name = "Set1")
-
-
 ##############
 # Load and format data
 
