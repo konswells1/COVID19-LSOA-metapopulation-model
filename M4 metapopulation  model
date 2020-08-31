@@ -79,7 +79,7 @@ GravDist.lsoa <- matrix(NA, NPop.Wales, NPop.Wales)
 for(i in 1:NPop.Wales){
 	for(j in 1:NPop.Wales){
 		#Distance to 10 nearest populations
-		popnearest.10_dist <- sort(Dist.lsoa[i,])[2:10]	
+		popnearest.10_dist <- sort(Dist.lsoa[i,])[2:11]	
 		popnearest.10_npop <- pop_total[match(popnearest.10_dist,Dist.lsoa[i,])]
 		popnear <- sum(100* popnearest.10_npop/popnearest.10_dist)
 		GravDist.lsoa[i,j] <- round(log(pop_total[i] + popnear) * log(pop_total[j]) / (Dist.lsoa[i,j]+0.0001), 3) 
@@ -285,7 +285,8 @@ ParEpi_val <- data.frame(
 	inf.asympt = c(0.5, 1),  # infectiousness of asymptomatic individuals
 	disp.rate = c(0.01, 0.2),
 	p.resist = c(0.1, 0.5),
-	delta = c(0, 1)
+	delta = c(0, 1),
+	gavD = c(0,1)
 )
 # Names of parameters to be sampled
 ParEpi_name <- names(ParEpi_val)
@@ -346,15 +347,9 @@ Hypercube$lockdown.factor[which(Hypercube$scenario==4)] <- SampCube_manage["lock
 NSim = nrow.HypCube
 
 
-## setwd(dir.sim); save(Hypercube, file="Hypercube.RData")
-setwd(dir.sim); load("Hypercube.RData")
-
-
-
 ###########
 # Run simulations
 
-setwd(dir.sim)
 x.start <-1
 x.end <- NSim
 
@@ -377,6 +372,26 @@ for(x in x.start:x.end){
 	lockdown.time <- Hypercube$lockdown.time [x]
 	lockdown.dist <- Hypercube$lockdown.dist [x]
 	lockdown.factor <- Hypercube$lockdown.factor [x]
+	gravD <- Hypercube$gavD [x]
+
+	# Compute gravity distance matrix between populations for each baseline 
+	gravdist <- matrix(NA, NPop, NPop)
+	for(i in 1:NPop){
+		for(j in 1:NPop){
+			eta = 1
+			#Distance to 10 nearest populations
+			popnearest.10_dist <- sort(Dist_sel[i,])[2:11]	
+			popnearest.10_npop <- pop_total[match(popnearest.10_dist, Dist_sel[i,])]
+			popnear <- sum(100* popnearest.10_npop/(popnearest.10_dist^gravD))
+			gravdist[i,j] <- round(log(pop_total[i] + popnear) * log(pop_total[j]) / ((Dist_sel[i,j]^gravD) +0.0001), 3) 
+		}
+	} 
+	diag(gravdist) <- 0
+	gravdist <- scale(gravdist)
+	pop.grav.index <- rowSums(gravdist)
+	if(scenario==1){
+		save(pop.grav.index, file=paste("pop.grav.index_", x, ".RData", sep=""))
+	}else{}
 
 	## Set initial infection scenarios
 	IND.sim <- IND
@@ -406,7 +421,7 @@ for(x in x.start:x.end){
 			# Check for implemented mitigation strategy
 			if(Out_ind[m, t, which(out_names=="time.Lockdown")]==0){
 				# Select visting individuals according to dispersal rate and gravity index
-				p.travel <- GravDist.lsoa_sc[sel_pop, sel_pop][m,]
+				p.travel <- gravdist[m,]
 				indno_visit <- which(rbinom(NInd, 1, disp.rate * p.travel[IND.sim$pop.no])==1)
 
 				# Individuals present in local context	
@@ -417,7 +432,7 @@ for(x in x.start:x.end){
 			}else{	
 				# Select visting individuals within constrained travel range
 				travel.limit <- ifelse(Dist.lsoa[sel_pop, sel_pop][m,]>=lockdown.dist, 0,1)
-				p.travel <- GravDist.lsoa_sc[sel_pop, sel_pop][m,] * travel.limit
+				p.travel <- gravdist[m,] * travel.limit
 				indno_visit <- which(rbinom(NInd, 1, disp.rate * p.travel[IND.sim$pop.no])==1)
 				# Individuals present in local context	
 				inds <- IND.sim[c(indno_local, indno_visit),]	
@@ -470,7 +485,7 @@ for(x in x.start:x.end){
 }
 }
 
-
 RUN.SIM(1, NSim)
+
 
  
